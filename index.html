@@ -1,0 +1,1897 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投资组合追踪器 — IBKR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- CloudBase 已移除，使用 localStorage 本地持久化 -->
+<!-- React -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #F7F7F5; --surface: #FFFFFF; --border: #E8E6E0; --border-strong: #D4D0C8;
+    --text-primary: #141413; --text-secondary: #6B6860; --text-tertiary: #9C9A94;
+    --gain: #1A9E6A; --gain-bg: #EBF8F2; --loss: #D94F3A; --loss-bg: #FDF0EE;
+    --accent: #2563EB; --accent-light: #EFF4FF;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
+    --radius: 10px;
+    --font-display: 'DM Serif Display', serif; --font-body: 'DM Sans', sans-serif; --font-mono: 'DM Mono', monospace;
+  }
+  body { font-family: var(--font-body); background: var(--bg); color: var(--text-primary); min-height: 100vh; }
+  #root { min-height: 100vh; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .modal { background: white; border-radius: 14px; padding: 32px; width: 100%; max-width: 520px; box-shadow: 0 24px 64px rgba(0,0,0,0.18); max-height: 90vh; overflow-y: auto; }
+  .step-badge { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: white; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .code-block { background: #1E1E2E; color: #CDD6F4; font-family: var(--font-mono); font-size: 11px; padding: 12px 14px; border-radius: 8px; white-space: pre; overflow-x: auto; margin: 8px 0; }
+  input[type="text"], textarea { width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); outline: none; resize: vertical; }
+  input[type="text"]:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+  .btn-primary { padding: 10px 20px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font-body); }
+  .btn-ghost { padding: 10px 20px; background: transparent; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: var(--font-body); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:#1A9E6A; animation: pulse 2s infinite; display:inline-block; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ─── TWEAK DEFAULTS ──────────────────────────────────────────────────────────
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accentColor": "#2563EB",
+  "gainColor": "#1A9E6A",
+  "lossColor": "#D94F3A",
+  "showCash": true,
+  "compactTable": false
+}/*EDITMODE-END*/;
+
+// ─── SAMPLE DATA ─────────────────────────────────────────────────────────────
+const SAMPLE_POSITIONS = [
+  { symbol: 'NVDA',  desc: 'NVIDIA Corp',       sector: 'Technology',  qty: 85,  cost: 520.00, mark: 875.40 },
+  { symbol: 'AAPL',  desc: 'Apple Inc',          sector: 'Technology',  qty: 150, cost: 162.00, mark: 192.35 },
+  { symbol: 'MSFT',  desc: 'Microsoft Corp',     sector: 'Technology',  qty: 70,  cost: 330.00, mark: 415.20 },
+  { symbol: 'JPM',   desc: 'JPMorgan Chase',     sector: 'Financials',  qty: 60,  cost: 175.00, mark: 226.50 },
+  { symbol: 'UNH',   desc: 'UnitedHealth Group', sector: 'Healthcare',  qty: 20,  cost: 510.00, mark: 542.10 },
+  { symbol: 'XOM',   desc: 'ExxonMobil Corp',    sector: 'Energy',      qty: 80,  cost: 108.00, mark: 118.60 },
+];
+const DEFAULT_CASH = 18540.00;
+
+// ─── LOCAL STORAGE HELPERS ────────────────────────────────────────────────────
+const LS_KEYS = {
+  positions:   'portfolio_positions',
+  history:     'portfolio_history',
+  cash:        'portfolio_cash',
+  realized:    'portfolio_realized',
+  summary:     'portfolio_summary',
+  investNote:  'portfolio_invest_note',
+};
+
+function lsGet(key, fallback = null) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+function saveLocal({ positions, history, cash, realized, summary, investNote }) {
+  if (positions  !== undefined) lsSet(LS_KEYS.positions, positions);
+  if (history    !== undefined) lsSet(LS_KEYS.history, (history || []).map(h => ({ ...h, date: h.date instanceof Date ? h.date.toISOString() : h.date })));
+  if (cash       !== undefined) lsSet(LS_KEYS.cash, cash);
+  if (realized   !== undefined) lsSet(LS_KEYS.realized, realized);
+  if (summary    !== undefined) lsSet(LS_KEYS.summary, summary);
+  if (investNote !== undefined) lsSet(LS_KEYS.investNote, investNote);
+}
+
+function loadLocal() {
+  return {
+    positions: lsGet(LS_KEYS.positions),
+    history:   (lsGet(LS_KEYS.history) || []).map(h => ({ ...h, date: new Date(h.date) })),
+    cash:      lsGet(LS_KEYS.cash),
+    realized:  lsGet(LS_KEYS.realized) || [],
+    summary:   lsGet(LS_KEYS.summary),
+  };
+}
+
+// ─── GITHUB GIST SYNC ─────────────────────────────────────────────────────────
+const GH_API = 'https://api.github.com';
+const GIST_FILE = 'portfolio.json';
+
+function getGhToken() { return localStorage.getItem('github_pat') || ''; }
+function getGistId()  { return localStorage.getItem('github_gist_id') || ''; }
+
+async function saveToGist(data) {
+  const token = getGhToken();
+  if (!token) return null;
+  const content = JSON.stringify({
+    positions: data.positions,
+    history: (data.history || []).map(h => ({ ...h, date: h.date instanceof Date ? h.date.toISOString() : h.date })),
+    cash: data.cash,
+    realized: data.realized || [],
+    summary: data.summary || null,
+    investNote: data.investNote || '',
+    updatedAt: new Date().toISOString()
+  });
+  const gistId = getGistId();
+  const url    = gistId ? `${GH_API}/gists/${gistId}` : `${GH_API}/gists`;
+  const body   = gistId
+    ? { files: { [GIST_FILE]: { content } } }
+    : { description: 'Portfolio Tracker – 持仓数据', public: true, files: { [GIST_FILE]: { content } } };
+  const res = await fetch(url, {
+    method: gistId ? 'PATCH' : 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Accept': 'application/vnd.github.v3+json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(`GitHub ${res.status}: ${t}`); }
+  const gist = await res.json();
+  if (!gistId) localStorage.setItem('github_gist_id', gist.id);
+  return gist.id;
+}
+
+async function loadFromGist(gistId) {
+  const res = await fetch(`${GH_API}/gists/${gistId}`, {
+    headers: { 'Accept': 'application/vnd.github.v3+json' }
+  });
+  if (!res.ok) throw new Error(`Gist ${res.status}`);
+  const gist = await res.json();
+  const file = gist.files[GIST_FILE];
+  if (!file) throw new Error('portfolio.json not found');
+  const d = JSON.parse(file.content);
+  return {
+    positions:  d.positions || [],
+    history:    (d.history || []).map(h => ({ ...h, date: new Date(h.date) })),
+    cash:       d.cash || 0,
+    realized:   d.realized || [],
+    summary:    d.summary || null,
+    investNote: d.investNote || '',
+  };
+}
+
+// ─── IBKR CLIENT PORTAL API ──────────────────────────────────────────────────
+async function ibkrFetch(base, path, opts = {}) {
+  const url = base.replace(/\/$/, '') + path;
+  const res = await fetch(url, { ...opts, credentials: 'include' });
+  if (!res.ok) throw new Error(`IBKR ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
+async function ibkrGetAccounts(base) {
+  return ibkrFetch(base, '/portfolio/accounts');
+}
+
+async function ibkrGetPositions(base, accountId) {
+  // IBKR returns pages; grab first page (up to 30 positions)
+  const page0 = await ibkrFetch(base, `/portfolio/${accountId}/positions/0`);
+  return Array.isArray(page0) ? page0 : [];
+}
+
+async function ibkrGetSummary(base, accountId) {
+  return ibkrFetch(base, `/portfolio/${accountId}/summary`);
+}
+
+async function ibkrTickle(base) {
+  try { await ibkrFetch(base, '/tickle', { method: 'POST' }); } catch {}
+}
+
+function ibkrPositionsToApp(raw) {
+  return raw
+    .filter(p => p.assetClass === 'STK' && p.position !== 0)
+    .map(p => ({
+      symbol: p.ticker || p.contractDesc || '?',
+      desc: p.fullName || p.contractDesc || '',
+      sector: p.sector || 'Unknown',
+      qty: p.position,
+      cost: p.avgCost || 0,
+      mark: p.mktPrice || 0,
+    }));
+}
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+const fmt = n => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+const fmtFull = n => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+const fmtDelta = n => (n >= 0 ? '+' : '') + fmtFull(n);
+
+const SECTOR_COLORS = {
+  'Technology': '#2563EB', 'Financials': '#7C3AED', 'Healthcare': '#059669',
+  'Energy': '#D97706', 'Utilities': '#0891B2', 'Real Estate': '#DB2777',
+  'Consumer': '#65A30D', 'Industrials': '#6B7280',
+  'Information Technology': '#2563EB', 'Health Care': '#059669',
+  'Communication Services': '#0891B2', 'Consumer Discretionary': '#65A30D',
+  'Consumer Staples': '#84CC16', 'Materials': '#F59E0B',
+  'Unknown': '#9CA3AF',
+};
+
+function genHistory(positions, cash) {
+  const today = new Date();
+  const days = [];
+  let base = positions.reduce((s, p) => s + p.qty * p.cost, 0) + cash;
+  for (let i = 89; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    if (d.getDay() === 0 || d.getDay() === 6) continue;
+    const noise = (Math.random() - 0.42) * base * 0.012;
+    base = Math.max(base + noise, base * 0.85);
+    days.push({ date: d, value: Math.round(base * 100) / 100 });
+  }
+  const curVal = positions.reduce((s, p) => s + p.qty * p.mark, 0) + cash;
+  days[days.length - 1].value = curVal;
+  return days;
+}
+
+// 股票行业映射表（IBKR XML 不含 sector，此处手动维护）
+const SECTOR_MAP = {
+  // 科技
+  MSFT: 'Technology', AAPL: 'Technology', GOOG: 'Technology', GOOGL: 'Technology',
+  NVDA: 'Technology', INTC: 'Technology', AMD: 'Technology', TSM: 'Technology',
+  PLTR: 'Technology', PSTG: 'Technology', SHOP: 'Technology', CRM: 'Technology',
+  META: 'Technology', AMZN: 'Technology', NFLX: 'Technology', UBER: 'Technology',
+  SNOW: 'Technology', DDOG: 'Technology', NET: 'Technology', CRWD: 'Technology',
+  // 金融/加密
+  COIN: 'Crypto/Financials', JPM: 'Financials', BAC: 'Financials', GS: 'Financials',
+  MS: 'Financials', V: 'Financials', MA: 'Financials', PYPL: 'Financials',
+  // 医疗
+  UNH: 'Healthcare', JNJ: 'Healthcare', PFE: 'Healthcare', MRNA: 'Healthcare',
+  ABBV: 'Healthcare', LLY: 'Healthcare',
+  // 能源
+  XOM: 'Energy', CVX: 'Energy', BP: 'Energy',
+  // 消费
+  TSLA: 'Consumer', AMZN: 'Consumer', NKE: 'Consumer', MCD: 'Consumer',
+  // ETF
+  GLD: 'ETF · 黄金', SLV: 'ETF · 白银', GDX: 'ETF · 矿业',
+  SPY: 'ETF · 标普500', QQQ: 'ETF · 纳斯达克', TQQQ: 'ETF · 3x纳斯达克',
+  SQQQ: 'ETF · 3x做空纳', IWM: 'ETF · 罗素2000',
+  XLV: 'ETF · 医疗', XLE: 'ETF · 能源', XLF: 'ETF · 金融',
+  // 其他
+  CRWV: 'Technology',
+};
+
+// 对任意来源的 positions 数组补全 sector（localStorage / Gist / URL 都走这里）
+function applySectorMap(positions) {
+  return (positions || []).map(p => {
+    // 已有有效 sector 则保留
+    if (p.sector && p.sector !== 'Unknown' && p.sector !== 'Stock') return p;
+    if (p.assetType === 'OPT') {
+      // 期权：取标的代码（symbol 形如 "COIN 260213P00200000"）
+      const underlying = (p.symbol || '').split(' ')[0];
+      const base = SECTOR_MAP[underlying];
+      return { ...p, sector: base ? `Options · ${base}` : 'Options' };
+    }
+    const mapped = SECTOR_MAP[p.symbol];
+    return { ...p, sector: mapped || p.sector || 'Stock' };
+  });
+}
+
+function parseFlexXML(xmlText) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlText, 'text/xml');
+  const positions = [];
+  doc.querySelectorAll('OpenPosition').forEach(p => {
+    const symbol = p.getAttribute('symbol');
+    const qty = parseFloat(p.getAttribute('position') || '0');
+    const mark = parseFloat(p.getAttribute('markPrice') || '0');
+    const cost = parseFloat(p.getAttribute('costBasisPrice') || '0');
+    const assetCategory = p.getAttribute('assetCategory');
+    if (symbol && qty !== 0 && (assetCategory === 'STK' || assetCategory === 'OPT')) {
+      // 期权取标的代码的行业；股票直接查表；查不到填 'Stock'
+      const underlyingSym = p.getAttribute('underlyingSymbol') || symbol;
+      const sector = assetCategory === 'OPT'
+        ? `Options · ${SECTOR_MAP[underlyingSym] || underlyingSym}`
+        : (SECTOR_MAP[symbol] || 'Stock');
+      positions.push({ symbol, desc: p.getAttribute('description') || symbol, sector, qty, cost, mark, currency: 'USD', assetType: assetCategory });
+    }
+  });
+  const equitySummary = [];
+  doc.querySelectorAll('NetAssetValueInBase, NAVInBase').forEach(e => {
+    const d = e.getAttribute('reportDate') || e.getAttribute('date');
+    const v = parseFloat(e.getAttribute('total') || e.getAttribute('nav') || '0');
+    if (d && v) equitySummary.push({ date: new Date(d), value: v });
+  });
+  if (!equitySummary.length) {
+    doc.querySelectorAll('EquitySummaryByReportDateInBase').forEach(e => {
+      const d = e.getAttribute('reportDate');
+      const v = parseFloat(e.getAttribute('total') || '0');
+      if (d && v) equitySummary.push({ date: new Date(d), value: v });
+    });
+  }
+  equitySummary.sort((a, b) => a.date - b.date);
+  // Read cash from NAV element (most accurate — cash component of total NAV)
+  let cash = null;
+  const navEls = doc.querySelectorAll('NetAssetValueInBase, NAVInBase');
+  if (navEls.length) {
+    const last = navEls[navEls.length - 1];
+    const c = parseFloat(last.getAttribute('cash') || '0');
+    if (c !== 0) cash = c;
+  }
+  if (cash === null) {
+    const lastEq = doc.querySelectorAll('EquitySummaryByReportDateInBase');
+    if (lastEq.length) {
+      const c = parseFloat(lastEq[lastEq.length - 1].getAttribute('cash') || '0');
+      if (c !== 0) cash = c;
+    }
+  }
+  if (cash === null) {
+    doc.querySelectorAll('CashReportCurrency').forEach(c => {
+      const isBase = c.getAttribute('isBase') === 'Y' || c.getAttribute('isBase') === '1';
+      const ending = parseFloat(c.getAttribute('endingCash') || c.getAttribute('endingSettledCash') || '0');
+      if ((c.getAttribute('currency') === 'USD' || isBase) && ending !== 0) cash = ending;
+    });
+  }
+  // Realized P&L per symbol from FIFO Performance Summary
+  const realized = [];
+  doc.querySelectorAll('FIFOPerformanceSummaryUnderlying').forEach(e => {
+    const symbol = e.getAttribute('symbol');
+    const desc = e.getAttribute('description') || symbol;
+    const assetCategory = e.getAttribute('assetCategory') || '';
+    const realizedPnl = parseFloat(e.getAttribute('totalRealizedPnl') || '0');
+    const unrealizedPnl = parseFloat(e.getAttribute('totalUnrealizedPnl') || '0');
+    if (symbol && (realizedPnl !== 0 || unrealizedPnl !== 0)) {
+      realized.push({ symbol, desc, assetType: assetCategory, realizedPnl, unrealizedPnl, totalPnl: realizedPnl + unrealizedPnl });
+    }
+  });
+  realized.sort((a, b) => b.realizedPnl - a.realizedPnl);
+  // Account summary from CashReport (BASE_SUMMARY row)
+  let summary = null;
+  const baseRow = Array.from(doc.querySelectorAll('CashReportCurrency')).find(c => c.getAttribute('currency') === 'BASE_SUMMARY') ||
+                  Array.from(doc.querySelectorAll('CashReportCurrency')).find(c => c.getAttribute('currency') === 'USD');
+  if (baseRow) {
+    summary = {
+      deposits: parseFloat(baseRow.getAttribute('deposits') || '0'),
+      withdrawals: parseFloat(baseRow.getAttribute('withdrawals') || '0'),
+      commissions: parseFloat(baseRow.getAttribute('commissions') || '0'),
+      dividends: parseFloat(baseRow.getAttribute('dividends') || '0'),
+      withholdingTax: parseFloat(baseRow.getAttribute('withholdingTax') || '0'),
+      brokerInterest: parseFloat(baseRow.getAttribute('brokerInterest') || '0'),
+      fromDate: baseRow.getAttribute('fromDate') || '',
+      toDate: baseRow.getAttribute('toDate') || ''
+    };
+  }
+  return { positions: positions.length ? positions : null, history: equitySummary.length ? equitySummary : null, cash, realized, summary };
+}
+
+// ─── METRIC CARDS ────────────────────────────────────────────────────────────
+function MetricCard({ label, value, sub, subColor, accent }) {
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '16px 20px', boxShadow: 'var(--shadow-sm)', flex: '1 1 180px', minWidth: 0 }}>
+      <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, color: accent || 'var(--text-primary)', lineHeight: 1.1, marginBottom: sub ? 4 : 0 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: subColor || 'var(--text-secondary)' }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ─── DONUT CHART ─────────────────────────────────────────────────────────────
+function DonutChart({ positions }) {
+  const [hovered, setHovered] = useState(null);
+  const sectorMap = {};
+  positions.forEach(p => {
+    const s = p.sector || 'Unknown';
+    sectorMap[s] = (sectorMap[s] || 0) + p.mark * p.qty;
+  });
+  const total = Object.values(sectorMap).reduce((a, b) => a + b, 0);
+  const sectors = Object.entries(sectorMap).sort((a, b) => b[1] - a[1]);
+  const CX = 90, CY = 90, R = 72, INNER = 44;
+  let angle = -Math.PI / 2;
+  const slices = sectors.map(([name, val]) => {
+    const pct = val / total;
+    const start = angle;
+    angle += pct * 2 * Math.PI;
+    const end = angle;
+    const x1 = CX + R * Math.cos(start), y1 = CY + R * Math.sin(start);
+    const x2 = CX + R * Math.cos(end), y2 = CY + R * Math.sin(end);
+    const xi1 = CX + INNER * Math.cos(start), yi1 = CY + INNER * Math.sin(start);
+    const xi2 = CX + INNER * Math.cos(end), yi2 = CY + INNER * Math.sin(end);
+    const large = pct > 0.5 ? 1 : 0;
+    const path = `M ${xi1} ${yi1} L ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} L ${xi2} ${yi2} A ${INNER} ${INNER} 0 ${large} 0 ${xi1} ${yi1} Z`;
+    return { name, val, pct, path, color: SECTOR_COLORS[name] || '#9CA3AF' };
+  });
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+      <svg viewBox="0 0 180 180" style={{ width: 150, flexShrink: 0 }}>
+        {slices.map(s => (
+          <path key={s.name} d={s.path} fill={s.color}
+            opacity={hovered && hovered !== s.name ? 0.3 : 1}
+            style={{ cursor: 'pointer', transition: 'opacity 0.15s' }}
+            onMouseEnter={() => setHovered(s.name)} onMouseLeave={() => setHovered(null)} />
+        ))}
+        <text x={CX} y={CY - 8} textAnchor="middle" fontSize="9" fill="#9C9A94" fontFamily="DM Sans">EQUITY</text>
+        <text x={CX} y={CY + 8} textAnchor="middle" fontSize="13" fontWeight="600" fill="#141413" fontFamily="DM Mono">{fmt(total)}</text>
+      </svg>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7, flex: 1, minWidth: 160 }}>
+        {slices.map(s => (
+          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: hovered && hovered !== s.name ? 0.3 : 1, transition: 'opacity 0.15s', cursor: 'default' }}
+            onMouseEnter={() => setHovered(s.name)} onMouseLeave={() => setHovered(null)}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 12, flex: 1, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+            <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', flexShrink: 0 }}>{(s.pct * 100).toFixed(1)}%</span>
+            <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', flexShrink: 0, minWidth: 60, textAlign: 'right' }}>{fmt(s.val)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── LINE CHART ──────────────────────────────────────────────────────────────
+function LineChart({ data }) {
+  const [hover, setHover] = useState(null);
+  const svgRef = useRef(null);
+  const W = 600, H = 200, PAD = { t: 16, r: 16, b: 32, l: 64 };
+  const cW = W - PAD.l - PAD.r, cH = H - PAD.t - PAD.b;
+  const vals = data.map(d => d.value);
+  const minV = Math.min(...vals) * 0.995, maxV = Math.max(...vals) * 1.005;
+  const xScale = i => (i / (data.length - 1)) * cW;
+  const yScale = v => cH - ((v - minV) / (maxV - minV)) * cH;
+  const linePath = data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${xScale(i).toFixed(1)} ${yScale(d.value).toFixed(1)}`).join(' ');
+  const areaPath = linePath + ` L ${xScale(data.length-1).toFixed(1)} ${cH} L 0 ${cH} Z`;
+  const xLabels = [0, Math.floor(data.length * 0.25), Math.floor(data.length * 0.5), Math.floor(data.length * 0.75), data.length - 1];
+  const lineColor = data[data.length-1].value >= data[0].value ? '#1A9E6A' : '#D94F3A';
+  const handleMouseMove = e => {
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left - PAD.l) * (W / rect.width);
+    const idx = Math.max(0, Math.min(data.length - 1, Math.round((x / cW) * (data.length - 1))));
+    setHover({ idx, x: xScale(idx), y: yScale(data[idx].value), d: data[idx] });
+  };
+  return (
+    <div style={{ position: 'relative' }}>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair' }} onMouseMove={handleMouseMove} onMouseLeave={() => setHover(null)}>
+        <defs>
+          <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineColor} stopOpacity="0.15" />
+            <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <g transform={`translate(${PAD.l},${PAD.t})`}>
+          {[0, 0.25, 0.5, 0.75, 1].map(f => {
+            const v = minV + f * (maxV - minV), y = yScale(v);
+            return <g key={f}><line x1={0} y1={y} x2={cW} y2={y} stroke="#E8E6E0" strokeWidth="1" /><text x={-6} y={y+4} textAnchor="end" fontSize="10" fill="#9C9A94" fontFamily="DM Mono">{fmt(v)}</text></g>;
+          })}
+          <path d={areaPath} fill="url(#areaGrad)" />
+          <path d={linePath} fill="none" stroke={lineColor} strokeWidth="2" strokeLinejoin="round" />
+          {xLabels.map(i => <text key={i} x={xScale(i)} y={cH+20} textAnchor="middle" fontSize="10" fill="#9C9A94" fontFamily="DM Mono">{data[i]?.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</text>)}
+          {hover && <><line x1={hover.x} y1={0} x2={hover.x} y2={cH} stroke="#D4D0C8" strokeWidth="1" strokeDasharray="3,3" /><circle cx={hover.x} cy={hover.y} r={4} fill={lineColor} stroke="white" strokeWidth="2" /></>}
+        </g>
+      </svg>
+      {hover && (
+        <div style={{ position: 'absolute', top: 8, left: Math.min(hover.x / 600 * 100, 65) + '%', background: 'var(--text-primary)', color: 'white', borderRadius: 6, padding: '6px 10px', fontSize: 12, fontFamily: 'var(--font-mono)', pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+          <div style={{ opacity: 0.6, fontSize: 10 }}>{hover.d.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+          <div style={{ fontWeight: 500, fontSize: 14 }}>{fmt(hover.d.value)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SECTOR PIE CHART ────────────────────────────────────────────────────────
+function SectorPieChart({ positions }) {
+  const [hovered, setHovered] = useState(null);
+
+  const PALETTE = ['#2563EB','#7C3AED','#059669','#D97706','#DC2626','#0891B2','#9333EA','#16A34A','#CA8A04','#0284C7','#BE123C','#78716C'];
+
+  // 按 sector 聚合市值（期权归并为"期权"）
+  const map = {};
+  positions.forEach(p => {
+    const val = Math.abs(p.mark * p.qty);
+    if (val <= 0) return;
+    const sector = (p.sector || 'Unknown').startsWith('Options') ? '期权' : (p.sector || 'Unknown');
+    map[sector] = (map[sector] || 0) + val;
+  });
+
+  const total = Object.values(map).reduce((s, v) => s + v, 0);
+  if (total === 0 || Object.keys(map).length < 2) return null;
+
+  const sectors = Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], i) => ({ name, value, pct: value / total * 100, color: PALETTE[i % PALETTE.length] }));
+
+  // SVG donut
+  const R = 80, INNER = 50, CX = 100, CY = 100;
+  let angle = -Math.PI / 2;
+  const slices = sectors.map((s, i) => {
+    const sweep = (s.pct / 100) * 2 * Math.PI;
+    if (sweep < 0.005) return null;
+    const a0 = angle, a1 = angle + sweep;
+    angle = a1;
+    const [c0, s0, c1, s1] = [Math.cos(a0), Math.sin(a0), Math.cos(a1), Math.sin(a1)];
+    const big = sweep > Math.PI ? 1 : 0;
+    const path = `M ${(CX+R*c0).toFixed(1)} ${(CY+R*s0).toFixed(1)} A ${R} ${R} 0 ${big} 1 ${(CX+R*c1).toFixed(1)} ${(CY+R*s1).toFixed(1)} L ${(CX+INNER*c1).toFixed(1)} ${(CY+INNER*s1).toFixed(1)} A ${INNER} ${INNER} 0 ${big} 0 ${(CX+INNER*c0).toFixed(1)} ${(CY+INNER*s0).toFixed(1)} Z`;
+    return { ...s, path };
+  }).filter(Boolean);
+
+  const hov = hovered !== null ? sectors[hovered] : null;
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-sm)', padding: '20px' }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 16 }}>行业分布</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 28, flexWrap: 'wrap' }}>
+
+        {/* 甜甜圈图 */}
+        <div style={{ flexShrink: 0 }}>
+          <svg viewBox="0 0 200 200" style={{ width: 170, height: 170, display: 'block' }}>
+            {slices.map((s, i) => (
+              <path key={i} d={s.path}
+                fill={s.color}
+                opacity={hovered === null || hovered === i ? 1 : 0.3}
+                stroke="var(--surface)" strokeWidth={hovered === i ? 1.5 : 2}
+                style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.15s', transformOrigin: `${CX}px ${CY}px`,
+                  transform: hovered === i ? 'scale(1.04)' : 'scale(1)' }}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+              />
+            ))}
+            {/* 中心文字 */}
+            <text x={CX} y={CY - 10} textAnchor="middle" fontSize="10" fill="var(--text-tertiary)" fontFamily="DM Sans, sans-serif">
+              {hov ? hov.name : '持仓分布'}
+            </text>
+            <text x={CX} y={CY + 8} textAnchor="middle" fontSize="16" fontWeight="700" fill="var(--text-primary)" fontFamily="DM Mono, monospace">
+              {hov ? `${hov.pct.toFixed(1)}%` : `${sectors.length} 类`}
+            </text>
+            {hov && (
+              <text x={CX} y={CY + 24} textAnchor="middle" fontSize="10" fill="var(--text-tertiary)" fontFamily="DM Mono, monospace">
+                {fmt(hov.value)}
+              </text>
+            )}
+          </svg>
+        </div>
+
+        {/* 图例 */}
+        <div style={{ flex: 1, minWidth: 180, display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {sectors.map((s, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+              opacity: hovered === null || hovered === i ? 1 : 0.35, transition: 'opacity 0.15s' }}
+              onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)}>
+              <div style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+              <div style={{ flex: 1, fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+              {/* 进度条 */}
+              <div style={{ width: 60, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${s.pct}%`, background: s.color, borderRadius: 2 }} />
+              </div>
+              <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', minWidth: 38, textAlign: 'right', fontWeight: 600 }}>{s.pct.toFixed(1)}%</div>
+              <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 64, textAlign: 'right' }}>{fmt(s.value)}</div>
+            </div>
+          ))}
+          <div style={{ marginTop: 4, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+            <span>合计</span><span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{fmt(total)}</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ─── BAR CHART ───────────────────────────────────────────────────────────────
+function BarChart({ positions }) {
+  const sorted = [...positions].sort((a, b) => (b.mark - b.cost) * b.qty - (a.mark - a.cost) * a.qty);
+  const pnls = sorted.map(p => (p.mark - p.cost) * p.qty);
+  const maxAbs = Math.max(...pnls.map(Math.abs));
+  const W = 600, BAR_H = 26, GAP = 6, PAD_L = 52, PAD_R = 80;
+  const H = sorted.length * (BAR_H + GAP) + 8;
+  const zero = PAD_L + (W - PAD_L - PAD_R) / 2;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
+      {sorted.map((pos, i) => {
+        const pnl = pnls[i], pct = (pos.mark - pos.cost) / pos.cost * 100;
+        const barW = Math.abs(pnl) / maxAbs * ((W - PAD_L - PAD_R) / 2 - 4);
+        const x = pnl >= 0 ? zero : zero - barW, y = i * (BAR_H + GAP);
+        const color = pnl >= 0 ? '#1A9E6A' : '#D94F3A';
+        return <g key={pos.symbol}>
+          <text x={PAD_L - 6} y={y + BAR_H/2 + 4} textAnchor="end" fontSize="11" fontFamily="DM Mono" fontWeight="500" fill="#141413">{pos.symbol}</text>
+          <rect x={zero - (W - PAD_L - PAD_R)/2} y={y} width={W - PAD_L - PAD_R} height={BAR_H} fill="#F7F7F5" rx="3" />
+          <rect x={x} y={y} width={Math.max(barW, 2)} height={BAR_H} fill={color} rx="3" opacity="0.85" />
+          <text x={zero + (W - PAD_L - PAD_R)/2 + 6} y={y + BAR_H/2 + 4} fontSize="10" fontFamily="DM Mono" fill={color} fontWeight="500">{pnl >= 0 ? '+' : ''}{fmt(pnl)}</text>
+          <text x={zero + (W - PAD_L - PAD_R)/2 + 6} y={y + BAR_H/2 + 14} fontSize="9" fontFamily="DM Mono" fill="#9C9A94">{fmtPct(pct)}</text>
+        </g>;
+      })}
+      <line x1={zero} y1={0} x2={zero} y2={H} stroke="#D4D0C8" strokeWidth="1" />
+    </svg>
+  );
+}
+
+// ─── POSITIONS TABLE ─────────────────────────────────────────────────────────
+function PositionsTable({ positions, compact }) {
+  const [sort, setSort] = useState({ key: 'pnl', dir: -1 });
+  const toggle = key => setSort(s => ({ key, dir: s.key === key ? -s.dir : -1 }));
+  const rows = useMemo(() => [...positions].map(p => ({ ...p, value: p.mark * p.qty, pnl: (p.mark - p.cost) * p.qty, pnlPct: (p.mark - p.cost) / p.cost * 100 })).sort((a, b) => (a[sort.key] > b[sort.key] ? 1 : -1) * sort.dir), [positions, sort]);
+  const totalValue = rows.reduce((s, r) => s + r.value, 0);
+  const Th = ({ k, children, align = 'left' }) => (
+    <th onClick={() => toggle(k)} style={{ padding: compact ? '8px 12px' : '10px 14px', textAlign: align, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)', background: '#FAFAF8' }}>
+      {children} {sort.key === k ? (sort.dir === 1 ? '↑' : '↓') : ''}
+    </th>
+  );
+  return (
+    <div style={{ overflow: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: compact ? 12 : 13 }}>
+        <thead><tr><Th k="symbol">代码</Th><Th k="desc">名称</Th><Th k="sector">类别</Th><Th k="qty" align="right">数量</Th><Th k="cost" align="right">均价</Th><Th k="mark" align="right">最新价</Th><Th k="value" align="right">市值</Th><Th k="pnl" align="right">未实现盈亏</Th><Th k="pnlPct" align="right">涨跌%</Th></tr></thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const pos = r.pnl >= 0;
+            return (
+              <tr key={r.symbol} style={{ borderBottom: '1px solid var(--border)', background: i % 2 === 0 ? 'white' : '#FAFAF8' }}>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: compact ? 11 : 12 }}><span style={{ background: 'var(--accent-light)', color: 'var(--accent)', padding: '2px 6px', borderRadius: 4 }}>{r.symbol}</span></td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', color: 'var(--text-secondary)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.desc}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px' }}><span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: (SECTOR_COLORS[r.sector] || '#999') + '18', color: SECTOR_COLORS[r.sector] || '#999', fontWeight: 500 }}>{r.sector}</span></td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{r.qty}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{fmtFull(r.cost)}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fmtFull(r.mark)}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 500 }}>{fmt(r.value)}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: pos ? 'var(--gain)' : 'var(--loss)' }}>{fmtDelta(r.pnl)}</td>
+                <td style={{ padding: compact ? '7px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 11 }}><span style={{ background: pos ? 'var(--gain-bg)' : 'var(--loss-bg)', color: pos ? 'var(--gain)' : 'var(--loss)', padding: '2px 6px', borderRadius: 4 }}>{fmtPct(r.pnlPct)}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr style={{ background: '#F0EFE8', borderTop: '2px solid var(--border-strong)' }}>
+            <td colSpan={6} style={{ padding: compact ? '8px 12px' : '10px 14px', fontWeight: 600, fontSize: 11, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>股票总值</td>
+            <td style={{ padding: compact ? '8px 12px' : '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{fmt(totalValue)}</td>
+            <td colSpan={2} />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+// ─── IBKR LIVE MODAL ─────────────────────────────────────────────────────────
+function IBKRLiveModal({ onConnect, onClose }) {
+  const [base, setBase] = useState('https://localhost:5000/v1/api');
+  const [status, setStatus] = useState('idle'); // idle | connecting | error
+  const [error, setError] = useState('');
+
+  const tryConnect = async () => {
+    setStatus('connecting'); setError('');
+    try {
+      const accs = await ibkrGetAccounts(base);
+      if (!Array.isArray(accs) || !accs.length) throw new Error('No accounts returned. Make sure you are logged in at the gateway.');
+      onConnect(base, accs[0].accountId || accs[0].id, accs);
+    } catch(e) {
+      setStatus('error');
+      setError(e.message || 'Connection failed');
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, marginBottom: 6 }}>IBKR 实时连接</div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 24, lineHeight: 1.6 }}>
+          连接本地运行的 IBKR Client Portal Gateway，获取实时持仓数据并自动刷新。
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <span className="step-badge">1</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>下载并运行 IBKR Gateway</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                从 <a href="https://www.interactivebrokers.com/en/trading/ib-api.php" target="_blank" style={{ color: 'var(--accent)' }}>IBKR API 页面</a>下载 <strong>Client Portal Gateway</strong>，解压后运行：
+              </div>
+              <div className="code-block">{"cd clientportal.gw\nbash bin/run.sh root/conf.yaml"}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <span className="step-badge">2</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>在 Gateway 登录</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                打开 <a href="https://localhost:5001" target="_blank" style={{ color: 'var(--accent)' }}>https://localhost:5001</a> → 接受自签名证书 → 用 IBKR 账号登录。
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+            <span className="step-badge">3</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>接受 API 证书</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                新标签页打开 <a href="https://localhost:5001/v1/api/portfolio/accounts" target="_blank" style={{ color: 'var(--accent)' }}>https://localhost:5001/v1/api/portfolio/accounts</a>，同样接受证书后返回。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Gateway 地址</div>
+          <input type="text" value={base} onChange={e => setBase(e.target.value)} placeholder="https://localhost:5001/v1/api" />
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>除非修改了端口，否则保持默认。</div>
+        </div>
+
+        {error && (
+          <div style={{ background: 'var(--loss-bg)', border: '1px solid #FCA5A5', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--loss)', marginBottom: 16, lineHeight: 1.6 }}>
+            <strong>错误：</strong> {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn-ghost" onClick={onClose}>取消</button>
+          <button className="btn-primary" onClick={tryConnect} disabled={status === 'connecting'} style={{ flex: 1, opacity: status === 'connecting' ? 0.7 : 1 }}>
+            {status === 'connecting' ? '连接中…' : '实时连接'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── SHARE MODAL ─────────────────────────────────────────────────────────────
+function ShareModal({ onClose, positions, cash, realized, history, investNote }) {
+  const [tab, setTab] = useState(getGistId() ? 'gist' : 'local');
+  const [copied, setCopied] = useState(false);
+  const [token, setToken] = useState(getGhToken());
+  const [tokenSaved, setTokenSaved] = useState(false);
+  const [gistSyncing, setGistSyncing] = useState(false);
+  const [gistError, setGistError] = useState('');
+  const gistId = getGistId();
+  const base = window.location.href.split('?')[0];
+
+  const gistUrl  = gistId ? `${base}?gist=${gistId}` : '';
+  const localUrl = (() => {
+    try {
+      const payload = { positions, cash, realized, history: (history || []).slice(-30), investNote };
+      return `${base}?data=${LZString.compressToEncodedURIComponent(JSON.stringify(payload))}`;
+    } catch { return ''; }
+  })();
+
+  const activeUrl = tab === 'gist' ? gistUrl : localUrl;
+  const copy = () => { if (activeUrl) { navigator.clipboard.writeText(activeUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); } };
+
+  const saveToken = () => {
+    localStorage.setItem('github_pat', token.trim());
+    setTokenSaved(true);
+    setTimeout(() => setTokenSaved(false), 2000);
+  };
+
+  const syncNow = async () => {
+    setGistSyncing(true); setGistError('');
+    try {
+      await saveToGist({ positions, history, cash, realized, summary: null, investNote });
+      setTab('gist');
+    } catch(e) { setGistError(e.message); }
+    setGistSyncing(false);
+  };
+
+  const tabStyle = (t) => ({
+    flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none',
+    borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
+    background: 'none', color: tab === t ? 'var(--accent)' : 'var(--text-tertiary)',
+    fontFamily: 'var(--font-body)', transition: 'all 0.15s',
+  });
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, marginBottom: 6 }}>分享投资组合</div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>生成只读链接，朋友无需登录即可查看你的持仓。</div>
+
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
+          <button style={tabStyle('gist')} onClick={() => { setTab('gist'); setCopied(false); }}>⚡ 实时链接（推荐）</button>
+          <button style={tabStyle('local')} onClick={() => { setTab('local'); setCopied(false); }}>📦 快照链接</button>
+        </div>
+
+        {tab === 'gist' && (
+          <div>
+            {!getGhToken() ? (
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.7 }}>
+                  需要配置 <strong>GitHub Token</strong> 才能使用实时链接。只需配置一次，之后每次导入 XML 数据会自动同步。
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>第一步：生成 Token</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.6 }}>
+                  访问 <a href="https://github.com/settings/tokens?type=beta" target="_blank" style={{ color: 'var(--accent)' }}>GitHub → Settings → Fine-grained tokens</a>，点击 "Generate new token"，<strong>只勾选 Gists → Read and write</strong>，生成后复制。
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>第二步：粘贴 Token</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  <input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="github_pat_xxxx..." style={{ flex: 1, fontSize: 12 }} />
+                  <button className="btn-primary" onClick={saveToken} style={{ whiteSpace: 'nowrap' }}>{tokenSaved ? '✓ 已保存' : '保存'}</button>
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>第三步：首次同步</div>
+                <button className="btn-primary" onClick={syncNow} disabled={!token || gistSyncing} style={{ width: '100%' }}>
+                  {gistSyncing ? '同步中...' : '立即同步到 GitHub Gist'}
+                </button>
+                {gistError && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--loss)' }}>❌ {gistError}</div>}
+              </div>
+            ) : gistId ? (
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, lineHeight: 1.6 }}>
+                  此链接<strong>永久有效</strong>，每次导入 XML 后自动更新，朋友打开看到的永远是最新数据。
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+                  <input type="text" value={gistUrl} readOnly style={{ flex: 1, fontSize: 10 }} />
+                  <button className="btn-primary" onClick={copy} style={{ whiteSpace: 'nowrap' }}>{copied ? '✓ 已复制!' : '复制链接'}</button>
+                </div>
+                <div style={{ marginTop: 12, padding: '10px 14px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, fontSize: 12, color: '#166534', lineHeight: 1.6 }}>
+                  ✅ 链接发一次就够了！每次你导入新 XML，朋友刷新页面自动看到最新数据。
+                </div>
+                <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="更换 Token..." style={{ flex: 1, fontSize: 12 }} />
+                  <button className="btn-ghost" onClick={saveToken} style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{tokenSaved ? '✓' : '更新'}</button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>Token 已保存，点击按钮完成首次同步：</div>
+                <button className="btn-primary" onClick={syncNow} disabled={gistSyncing} style={{ width: '100%' }}>
+                  {gistSyncing ? '同步中...' : '立即同步到 GitHub Gist'}
+                </button>
+                {gistError && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--loss)' }}>❌ {gistError}</div>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'local' && (
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, lineHeight: 1.6 }}>
+              数据压缩进链接，无需任何配置。但每次更新数据后需重新生成链接。
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+              <input type="text" value={localUrl} readOnly style={{ flex: 1, fontSize: 10 }} />
+              <button className="btn-primary" onClick={copy} style={{ whiteSpace: 'nowrap' }}>{copied ? '✓ 已复制!' : '复制链接'}</button>
+            </div>
+          </div>
+        )}
+
+        <button className="btn-ghost" onClick={onClose} style={{ width: '100%', marginTop: 16 }}>关闭</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+// ─── NEWS TAB ─────────────────────────────────────────────────────────────────
+function NewsTab({ symbols }) {
+  const [marketNews, setMarketNews] = useState([]);
+  const [stockNews, setStockNews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [lastUpdated, setLastUpdated] = useState('');
+
+  const today = () => new Date().toISOString().split('T')[0]; // e.g. "2026-04-26"
+  const NEWS_CACHE_KEY = 'news_cache';
+
+  const parseRSS = (xml) => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xml, 'text/xml');
+    const channelTitle = doc.querySelector('channel > title')?.textContent || '';
+    return Array.from(doc.querySelectorAll('item')).slice(0, 6).map(item => ({
+      title: item.querySelector('title')?.textContent?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || '',
+      link: item.querySelector('link')?.textContent || '',
+      pubDate: item.querySelector('pubDate')?.textContent || '',
+      source: channelTitle,
+    }));
+  };
+
+  const fetchRSS = async (url) => {
+    // 在URL中加入日期参数，绕过代理的跨日期缓存
+    const proxy = 'https://api.codetabs.com/v1/proxy?quest=';
+    const bust = `${url}${url.includes('?') ? '&' : '?'}_d=${today()}`;
+    const res = await fetch(proxy + encodeURIComponent(bust));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    return parseRSS(text);
+  };
+
+  const loadNews = async (forceRefresh = false) => {
+    // 检查 localStorage 缓存
+    if (!forceRefresh) {
+      try {
+        const cached = JSON.parse(localStorage.getItem(NEWS_CACHE_KEY) || 'null');
+        if (cached && cached.date === today() && cached.market?.length) {
+          setMarketNews(cached.market);
+          setStockNews(cached.stocks);
+          setLastUpdated(cached.time);
+          setLoading(false);
+          return;
+        }
+      } catch {}
+    }
+
+    setLoading(true);
+    setError('');
+    const [marketResult, stocksResult] = await Promise.allSettled([
+      fetchRSS('https://www.ftchinese.com/rss/news'),
+      fetchRSS('https://36kr.com/feed'),
+    ]);
+    const market = marketResult.status === 'fulfilled' ? marketResult.value : [];
+    const stocks = stocksResult.status === 'fulfilled' ? stocksResult.value : [];
+    const now = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+    setMarketNews(market);
+    setStockNews(stocks);
+    setLastUpdated(now);
+
+    if (market.length === 0 && stocks.length === 0) {
+      setError('无法加载新闻，请检查网络连接。');
+    } else {
+      // 存入缓存
+      try {
+        localStorage.setItem(NEWS_CACHE_KEY, JSON.stringify({ date: today(), time: now, market, stocks }));
+      } catch {}
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadNews(false);
+  }, []);
+
+  const fmtDate = (s) => {
+    try { const d = new Date(s); return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    catch { return s; }
+  };
+
+  const NewsCard = ({ item }) => (
+    React.createElement('a', {
+      href: item.link, target: '_blank', rel: 'noopener noreferrer',
+      style: { display: 'block', padding: '16px 20px', borderBottom: '1px solid var(--border)', textDecoration: 'none', color: 'inherit', transition: 'background 0.15s' },
+      onMouseEnter: e => e.currentTarget.style.background = 'var(--bg)',
+      onMouseLeave: e => e.currentTarget.style.background = '',
+    },
+      React.createElement('div', { style: { fontSize: 14, fontWeight: 500, lineHeight: 1.5, marginBottom: 6, color: 'var(--text-primary)' } }, item.title),
+      React.createElement('div', { style: { fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' } },
+        item.source, ' · ', fmtDate(item.pubDate)
+      )
+    )
+  );
+
+  // Header bar with refresh button + last-updated
+  const newsHeader = React.createElement('div', {
+    style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }
+  },
+    React.createElement('span', { style: { fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' } }, '📰 资讯中心'),
+    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12 } },
+      lastUpdated && React.createElement('span', { style: { fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' } },
+        '最后更新: ', lastUpdated
+      ),
+      React.createElement('button', {
+        onClick: () => loadNews(true),
+        disabled: loading,
+        style: {
+          fontSize: 11, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
+          background: 'var(--bg)', color: 'var(--text-secondary)', cursor: loading ? 'not-allowed' : 'pointer',
+          opacity: loading ? 0.6 : 1, transition: 'opacity 0.2s',
+        }
+      }, loading ? '刷新中…' : '🔄 刷新')
+    )
+  );
+
+  if (loading && marketNews.length === 0) return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+    newsHeader,
+    React.createElement('div', { style: { textAlign: 'center', padding: 60, color: 'var(--text-tertiary)' } }, '加载中...')
+  );
+
+  if (error && marketNews.length === 0) return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+    newsHeader,
+    React.createElement('div', { style: { textAlign: 'center', padding: 60, color: 'var(--loss)' } }, error)
+  );
+
+  return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 20 } },
+    newsHeader,
+    error && React.createElement('div', { style: { padding: '8px 14px', background: 'rgba(var(--loss-rgb,220,38,38),0.08)', border: '1px solid var(--loss)', borderRadius: 8, fontSize: 12, color: 'var(--loss)' } }, error),
+    React.createElement('div', { style: { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' } },
+      React.createElement('div', { style: { padding: '16px 20px', borderBottom: '1px solid var(--border)' } },
+        React.createElement('div', { style: { fontSize: 13, fontWeight: 600 } }, '科技财经',
+          React.createElement('span', { style: { fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 400, marginLeft: 8 } }, '36氪 · 今日 Top 5')
+        ),
+      ),
+      stockNews.length > 0
+        ? stockNews.map((item, i) => React.createElement(NewsCard, { key: i, item }))
+        : React.createElement('div', { style: { padding: '24px 20px', color: 'var(--text-tertiary)', fontSize: 13, textAlign: 'center' } }, '暂无数据，请点击刷新')
+    )
+  );
+}
+
+// ─── AI CHAT ASSISTANT ───────────────────────────────────────────────────────
+const DEEPSEEK_KEY_DEFAULT = 'sk-b99c11f0561549cab41b6a57d3fddfb1';
+const CORS_PROXY = 'https://api.codetabs.com/v1/proxy?quest=';
+
+// 支持的 AI 模型（均兼容 OpenAI 格式，均可在大陆直连）
+const AI_PROVIDERS = {
+  deepseek: {
+    name: 'DeepSeek Chat',
+    url: 'https://api.deepseek.com/v1/chat/completions',
+    model: 'deepseek-chat',
+    placeholder: 'sk-...',
+    hint: '国内直连 · platform.deepseek.com',
+  },
+  qwen: {
+    name: '通义千问 Qwen-Plus',
+    url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    model: 'qwen-plus',
+    placeholder: 'sk-...',
+    hint: '🆓 国内直连 · 新用户大量免费 Token · bailian.console.aliyun.com',
+  },
+  glm: {
+    name: '智谱 GLM-4-Flash',
+    url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    model: 'glm-4-flash',
+    placeholder: '填入 API Key...',
+    hint: '🆓 国内直连 · 永久免费 · open.bigmodel.cn',
+  },
+};
+function getAIConfig() {
+  const pid = localStorage.getItem('ai_provider') || 'deepseek';
+  const cfg = AI_PROVIDERS[pid] || AI_PROVIDERS.deepseek;
+  const key = localStorage.getItem('ai_api_key') || DEEPSEEK_KEY_DEFAULT;
+  return { ...cfg, key, pid };
+}
+
+// 导入 XML 后，自动用 AI 补全未知股票的行业分类
+async function enrichSectorsWithAI(positions) {
+  // 只处理 sector 还是 'Stock'（即静态表里查不到）的股票仓位
+  const unknowns = positions.filter(p => p.assetType !== 'OPT' && p.sector === 'Stock');
+  if (!unknowns.length) return positions;   // 全部已知，直接返回
+
+  const cfg = getAIConfig();
+  const list = unknowns.map(p => `${p.symbol}: ${p.desc}`).join('\n');
+  const prompt = `以下是一些股票代码和名称，请用简短中文为每只股票标注所属行业（例如：科技、金融、医疗、能源、消费、通信、ETF·黄金等）。
+只返回 JSON，格式为 {"代码":"行业",...}，不要其他内容。
+
+${list}`;
+
+  try {
+    const opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.key}` },
+      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content: prompt }], max_tokens: 400, temperature: 0 }),
+    };
+    // 直连优先，失败走 corsproxy
+    let res;
+    try { res = await fetch(cfg.url, opts); } catch {}
+    if (!res?.ok) res = await fetch('https://corsproxy.io/?' + encodeURIComponent(cfg.url), opts);
+    if (!res.ok) return positions;
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return positions;
+    const sectorData = JSON.parse(jsonMatch[0]);
+    return positions.map(p => ({ ...p, sector: sectorData[p.symbol] || p.sector }));
+  } catch(e) {
+    console.warn('Sector enrichment failed:', e);
+    return positions;
+  }
+}
+
+// ─── AI TOOLS (Function Calling) ─────────────────────────────────────────────
+const AI_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_stock_info',
+      description: '获取股票实时行情，包括当前价格、涨跌幅、52周高低点。查询用户持仓或任意股票的实时价格时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: '股票代码，如 AAPL、NVDA、TSLA、0700.HK（港股加 .HK 后缀）' }
+        },
+        required: ['symbol']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_financial_news',
+      description: '搜索最新财经新闻、公司公告、市场动态。询问最新消息、公司新闻、宏观事件时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '搜索关键词，如 "NVIDIA earnings"、"美联储降息"、"特斯拉裁员"' }
+        },
+        required: ['query']
+      }
+    }
+  }
+];
+
+// 多代理 fetch：依次尝试，返回第一个成功的响应
+async function proxyFetch(url) {
+  const proxies = [
+    'https://api.allorigins.win/raw?url=',   // 主力：稳定，无速率限制
+    'https://corsproxy.io/?',                 // 备用1
+    'https://api.codetabs.com/v1/proxy?quest=', // 备用2
+  ];
+  let lastErr;
+  for (const p of proxies) {
+    try {
+      const res = await fetch(p + encodeURIComponent(url));
+      if (!res.ok) continue;
+      const text = await res.text();
+      // 过滤掉代理返回的 HTML 错误页
+      if (text.trimStart().startsWith('<')) continue;
+      // 重新包装成可 .json() 的 Response
+      return new Response(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr || new Error('所有代理均失败');
+}
+
+async function executeTool(name, args) {
+  if (name === 'get_stock_info') {
+    const sym = args.symbol.toUpperCase().trim();
+
+    // ① 先试 Yahoo Finance query2（数据最全，延迟低）
+    try {
+      const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`;
+      const res = await proxyFetch(url);
+      const data = await res.json();
+      const r = data.chart?.result?.[0];
+      if (r?.meta?.regularMarketPrice) {
+        const m = r.meta;
+        const chg = m.regularMarketPrice - m.chartPreviousClose;
+        const chgPct = m.chartPreviousClose > 0 ? (chg / m.chartPreviousClose * 100).toFixed(2) : '0';
+        return JSON.stringify({
+          symbol: m.symbol, name: m.shortName || sym,
+          price: `${m.currency} ${m.regularMarketPrice.toFixed(2)}`,
+          change: `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`,
+          prevClose: m.chartPreviousClose?.toFixed(2),
+          weekHigh52: m.fiftyTwoWeekHigh?.toFixed(2),
+          weekLow52: m.fiftyTwoWeekLow?.toFixed(2),
+          marketState: m.marketState, dataTime: new Date().toLocaleString('zh-CN'),
+        });
+      }
+    } catch {}
+
+    // ② 备用：Stooq（延迟约15分钟，无 Cloudflare）
+    try {
+      let stooqSym = /\.(HK|hk)$/.test(sym) ? sym.toLowerCase()
+                   : sym.includes('.')       ? sym.toLowerCase()
+                   :                           sym.toLowerCase() + '.us';
+      const url = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcvn&h&e=json`;
+      const res = await proxyFetch(url);
+      const data = await res.json();
+      const s = data.symbols?.[0];
+      if (s && s.close !== 'N/D' && s.close != null) {
+        const chg = s.close - s.open;
+        const chgPct = s.open > 0 ? (chg / s.open * 100).toFixed(2) : '0';
+        return JSON.stringify({
+          symbol: sym, name: s.name || sym,
+          price: s.close?.toFixed(2),
+          change: `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chgPct}%)`,
+          open: s.open?.toFixed(2), high: s.high?.toFixed(2), low: s.low?.toFixed(2),
+          volume: s.volume, date: s.date,
+          note: '行情延迟约15分钟', dataTime: new Date().toLocaleString('zh-CN'),
+        });
+      }
+    } catch {}
+
+    return `暂时无法获取 ${sym} 实时行情（数据接口受限），请稍后重试或直接访问 Yahoo Finance 查看。`;
+  }
+
+  if (name === 'search_financial_news') {
+    try {
+      const q = encodeURIComponent(args.query);
+      // Google News RSS：公开、无需认证
+      const url = `https://news.google.com/rss/search?q=${q}&hl=zh-CN&gl=US&ceid=US:zh-Hans`;
+      const res = await proxyFetch(url);
+      const text = await res.text();
+      const doc = new DOMParser().parseFromString(text, 'text/xml');
+      const items = Array.from(doc.querySelectorAll('item')).slice(0, 6);
+      if (!items.length) return `未找到关于"${args.query}"的相关新闻。`;
+      const news = items.map(item => {
+        const title   = item.querySelector('title')?.textContent?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || '';
+        const pubDate = item.querySelector('pubDate')?.textContent || '';
+        const source  = item.querySelector('source')?.textContent?.trim() || '';
+        const dateStr = pubDate ? new Date(pubDate).toLocaleDateString('zh-CN') : '';
+        return `[${dateStr}] ${title}${source ? ' — ' + source : ''}`;
+      }).join('\n');
+      return `关于"${args.query}"的最新新闻:\n${news}`;
+    } catch(e) { return `新闻搜索失败: ${e.message}`; }
+  }
+
+  return '未知工具';
+}
+
+function ChatAssistant({ positions, cash, realized, metrics }) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [toolStatus, setToolStatus] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsProvider, setSettingsProvider] = useState(() => localStorage.getItem('ai_provider') || 'deepseek');
+  const [settingsKey, setSettingsKey] = useState(() => localStorage.getItem('ai_api_key') || '');
+  const bottomRef = useRef(null);
+
+  const saveSettings = () => {
+    localStorage.setItem('ai_provider', settingsProvider);
+    if (settingsKey.trim()) localStorage.setItem('ai_api_key', settingsKey.trim());
+    setShowSettings(false);
+    setMessages([]);  // 切换模型时清空历史
+  };
+
+  const buildSystem = () => {
+    const posLines = positions.map(p => {
+      const pnl = (p.mark - p.cost) * p.qty;
+      const pct = p.cost > 0 ? ((p.mark - p.cost) / p.cost * 100).toFixed(1) : '0';
+      return `• ${p.symbol} (${p.desc}): ${p.qty}股, 成本$${p.cost.toFixed(2)}, 现价$${p.mark.toFixed(2)}, 盈亏$${pnl.toFixed(2)}(${pct}%)`;
+    }).join('\n');
+    const rlLines = realized.length
+      ? realized.slice(0, 10).map(r => `• ${r.symbol}: 已实现$${r.realizedPnl?.toFixed(2)}`).join('\n')
+      : '暂无数据';
+    return `你是用户的私人AI投资顾问，数据来自 Interactive Brokers，并拥有联网工具可查询实时行情和新闻。请用简洁中文回答。
+
+账户概况（截至上次导入）
+- 投资组合总值: $${metrics.totalVal.toFixed(2)}
+- 现金余额: $${cash.toFixed(2)}
+- 未实现盈亏: $${metrics.unrealizedPnL.toFixed(2)} (${metrics.unrealizedPct.toFixed(1)}%)
+
+持仓明细
+${posLines}
+
+已实现盈亏（今年 FIFO）
+${rlLines}
+
+你可以主动调用工具获取实时股价和新闻。回答要基于真实数据，没有的信息请直接说明。`;
+  };
+
+  const send = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = { role: 'user', content: input.trim() };
+    const newHistory = [...messages, userMsg];
+    setMessages(newHistory);
+    setInput('');
+    setLoading(true);
+    setToolStatus('');
+
+    try {
+      const apiMsgs = [{ role: 'system', content: buildSystem() }, ...newHistory];
+      let finalContent = '';
+
+      // 读取当前 AI 配置（支持 DeepSeek / Gemini）
+      const cfg = getAIConfig();
+      const callDS = async (payload) => {
+        const opts = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.key}` },
+          body: JSON.stringify({ ...payload, model: cfg.model }),
+        };
+        // 三个国内模型均支持直连，直接调用
+        try {
+          const r = await fetch(cfg.url, opts);
+          if (r.ok) return r.json();
+          const t = await r.text();
+          throw new Error(`${cfg.name} ${r.status}: ${t}`);
+        } catch(e) {
+          // 若直连失败（海外访问 DeepSeek 等场景），走 corsproxy.io
+          if (e.message?.includes('fetch') || e instanceof TypeError) {
+            const r2 = await fetch('https://corsproxy.io/?' + encodeURIComponent(cfg.url), opts);
+            if (!r2.ok) throw new Error(`${cfg.name} HTTP ${r2.status}`);
+            return r2.json();
+          }
+          throw e;
+        }
+      };
+
+      // Agentic loop: AI may call tools multiple times
+      for (let round = 0; round < 4; round++) {
+        const data = await callDS({ model: 'deepseek-chat', messages: apiMsgs, tools: AI_TOOLS, tool_choice: 'auto', max_tokens: 1500 });
+        const choice = data.choices?.[0];
+        if (!choice) break;
+        const msg = choice.message;
+
+        if (!msg.tool_calls?.length) {
+          finalContent = msg.content || '未能获取回复。';
+          break;
+        }
+
+        // Execute each tool call
+        apiMsgs.push(msg);
+        for (const tc of msg.tool_calls) {
+          const fnName = tc.function.name;
+          const fnArgs = JSON.parse(tc.function.arguments);
+          const label = fnName === 'get_stock_info' ? `📈 查询 ${fnArgs.symbol} 行情…` : `🔍 搜索"${fnArgs.query}"…`;
+          setToolStatus(label);
+          const result = await executeTool(fnName, fnArgs);
+          apiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: result });
+        }
+        setToolStatus('💭 整理结果…');
+      }
+
+      setToolStatus('');
+      setMessages(prev => [...prev, { role: 'assistant', content: finalContent || '未能生成回答，请重试。' }]);
+    } catch(e) {
+      setToolStatus('');
+      setMessages(prev => [...prev, { role: 'assistant', content: `网络错误: ${e.message}` }]);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading, toolStatus]);
+
+  const SUGGESTED = ['我的持仓现在值多少？', 'NVDA最新股价和新闻是什么？', '帮我分析持仓风险', '美股今天大盘怎么样？'];
+
+  return (
+    <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 300, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
+      {open && (
+        <div style={{ width: 370, height: 520, background: 'white', borderRadius: 16, boxShadow: '0 20px 60px rgba(0,0,0,0.18)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '14px 16px', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 18 }}>🤖</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'white' }}>AI 投资助手</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.75)' }}>{AI_PROVIDERS[settingsProvider]?.name || 'DeepSeek'} · 实时行情 · 财经新闻</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => setShowSettings(s => !s)} title="模型设置" style={{ background: 'none', border: 'none', color: showSettings ? 'white' : 'rgba(255,255,255,0.75)', fontSize: 16, cursor: 'pointer', padding: '0 6px', lineHeight: 1 }}>⚙️</button>
+              <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', color: 'white', fontSize: 20, cursor: 'pointer', lineHeight: 1, opacity: 0.8 }}>×</button>
+            </div>
+          </div>
+
+          {/* 设置面板 */}
+          {showSettings && (
+            <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--border)', background: 'var(--bg)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>选择 AI 模型</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {Object.entries(AI_PROVIDERS).map(([k, v]) => (
+                  <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '10px 14px', border: `2px solid ${settingsProvider === k ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 10, background: settingsProvider === k ? 'var(--accent-light)' : 'white', transition: 'all 0.15s' }}
+                    onClick={() => setSettingsProvider(k)}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: settingsProvider === k ? 'var(--accent)' : 'var(--text-primary)' }}>{v.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>{v.hint}</div>
+                    </div>
+                    {settingsProvider === k && <span style={{ color: 'var(--accent)', fontSize: 14, fontWeight: 700 }}>✓</span>}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 6 }}>API Key（留空则用默认 DeepSeek key）</div>
+                <input type="password" value={settingsKey} onChange={e => setSettingsKey(e.target.value)}
+                  placeholder={AI_PROVIDERS[settingsProvider]?.placeholder || 'sk-...'}
+                  style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 8, padding: '7px 10px', fontSize: 12, outline: 'none', fontFamily: 'var(--font-mono)', boxSizing: 'border-box' }}
+                />
+              </div>
+              <button onClick={saveSettings} style={{ padding: '9px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-body)' }}>
+                保存并切换
+              </button>
+            </div>
+          )}
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {messages.length === 0 && (
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 13, textAlign: 'center', padding: '12px 8px' }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>🌐</div>
+                <div style={{ fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 4 }}>联网 AI 投资助手</div>
+                <div style={{ lineHeight: 1.6, marginBottom: 14, fontSize: 12 }}>已知晓你的持仓，可查询实时股价和最新财经新闻。</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {SUGGESTED.map(q => (
+                    <button key={q} onClick={() => setInput(q)} style={{ background: 'var(--accent-light)', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 20, padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--font-body)', textAlign: 'left' }}>{q}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                <div style={{ maxWidth: '85%', padding: '9px 13px', borderRadius: m.role === 'user' ? '14px 14px 3px 14px' : '14px 14px 14px 3px', background: m.role === 'user' ? 'var(--accent)' : 'var(--bg)', color: m.role === 'user' ? 'white' : 'var(--text-primary)', fontSize: 13, lineHeight: 1.65, border: m.role === 'assistant' ? '1px solid var(--border)' : 'none', whiteSpace: 'pre-wrap' }}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+                <div style={{ padding: '9px 13px', background: 'var(--bg)', borderRadius: '14px 14px 14px 3px', border: '1px solid var(--border)', fontSize: 12, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                  {toolStatus || '思考中…'}
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
+            <input
+              value={input} onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
+              placeholder="问股价、新闻或分析持仓…"
+              style={{ flex: 1, border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 13, outline: 'none', fontFamily: 'var(--font-body)' }}
+            />
+            <button onClick={send} disabled={loading || !input.trim()} style={{ padding: '8px 14px', background: 'var(--accent)', color: 'white', border: 'none', borderRadius: 8, cursor: loading || !input.trim() ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: loading || !input.trim() ? 0.5 : 1, fontFamily: 'var(--font-body)' }}>发送</button>
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+        <button onClick={() => setOpen(o => !o)} title="AI 投资助手" style={{ width: 62, height: 62, borderRadius: '50%', background: open ? '#1e40af' : 'var(--accent)', color: 'white', border: '3px solid rgba(255,255,255,0.35)', cursor: 'pointer', boxShadow: '0 6px 24px rgba(37,99,235,0.55)', fontSize: open ? 24 : 28, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }}>
+          {open ? '×' : '🤖'}
+        </button>
+        {!open && <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--accent)', background: 'white', border: '1px solid var(--border)', borderRadius: 20, padding: '2px 8px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>AI 投资助手</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── INVEST NOTE PANEL ───────────────────────────────────────────────────────
+function InvestNotePanel({ note, isViewOnly, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
+
+  useEffect(() => { setDraft(note); }, [note]);
+
+  const handleSave = () => {
+    onSave(draft);
+    setEditing(false);
+  };
+
+  if (!note && isViewOnly) return null;
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '20px 24px', boxShadow: 'var(--shadow-sm)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 2h12v10H2zM5 6h6M5 8.5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+          <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600 }}>投资总结</span>
+        </div>
+        {!isViewOnly && !editing && (
+          <button onClick={() => setEditing(true)} style={{ fontSize: 11, padding: '4px 10px', background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 6, cursor: 'pointer', fontFamily: 'var(--font-body)', fontWeight: 600 }}>
+            {note ? '编辑' : '+ 添加总结'}
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <div>
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="写下你的投资思路、持仓逻辑、风险提示……分享链接后，查看者可以读到这段总结。"
+            style={{ width: '100%', minHeight: 120, resize: 'vertical', fontSize: 13, lineHeight: 1.7, fontFamily: 'var(--font-body)', border: '1px solid var(--border)', borderRadius: 7, padding: '10px 14px', outline: 'none', color: 'var(--text-primary)' }}
+            autoFocus
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
+            <button onClick={() => { setDraft(note); setEditing(false); }} className="btn-ghost" style={{ fontSize: 12, padding: '7px 16px' }}>取消</button>
+            <button onClick={handleSave} className="btn-primary" style={{ fontSize: 12, padding: '7px 16px' }}>保存</button>
+          </div>
+        </div>
+      ) : note ? (
+        <div style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{note}</div>
+      ) : (
+        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>尚未添加投资总结。点击右上角"+ 添加总结"写入后，分享链接的查看者也能看到。</div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [tweaks, setTweaks] = useState(TWEAK_DEFAULTS);
+  const [showTweaks, setShowTweaks] = useState(false);
+  const [positions, setPositions] = useState(() => applySectorMap(lsGet(LS_KEYS.positions) || SAMPLE_POSITIONS));
+  const [history, setHistory] = useState(() => { const h = lsGet(LS_KEYS.history); return h?.length ? h.map(x => ({...x, date: new Date(x.date)})) : null; });
+  const [cash, setCash] = useState(() => lsGet(LS_KEYS.cash) ?? DEFAULT_CASH);
+  const [realized, setRealized] = useState(() => lsGet(LS_KEYS.realized) || []);
+  const [accountSummary, setAccountSummary] = useState(() => lsGet(LS_KEYS.summary));
+  const [investNote, setInvestNote] = useState(() => lsGet(LS_KEYS.investNote) || '');
+  const [uploadStatus, setUploadStatus] = useState(null);
+  const [sectorStatus, setSectorStatus] = useState(''); // '' | 'enriching' | 'done'
+  const [activeTab, setActiveTab] = useState('overview');
+  const [showShare, setShowShare] = useState(false);
+  const [showIBKR, setShowIBKR] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('saved');
+  const [isViewOnly, setIsViewOnly] = useState(false);
+  // IBKR live state
+  const [ibkrLive, setIbkrLive] = useState(false);
+  const [ibkrBase, setIbkrBase] = useState('');
+  const [ibkrAccount, setIbkrAccount] = useState('');
+  const [ibkrAccounts, setIbkrAccounts] = useState([]);
+  const [ibkrDayPnL, setIbkrDayPnL] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [ibkrError, setIbkrError] = useState('');
+  const refreshTimer = useRef(null);
+  const fileRef = useRef(null);
+
+  const hist = useMemo(() => history || genHistory(positions, cash), [positions, history, cash]);
+
+  const metrics = useMemo(() => {
+    const totalEquity = positions.reduce((s, p) => s + p.mark * p.qty, 0);
+    const totalCost = positions.reduce((s, p) => s + p.cost * p.qty, 0);
+    const unrealizedPnL = totalEquity - totalCost;
+    const unrealizedPct = totalCost > 0 ? unrealizedPnL / totalCost * 100 : 0;
+    const totalVal = totalEquity + (tweaks.showCash ? cash : 0);
+    return { totalVal, totalEquity, unrealizedPnL, unrealizedPct };
+  }, [positions, cash, tweaks.showCash]);
+
+  // On mount: check URL params, load from localStorage or Gist
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+
+    // ?data= LZ-String snapshot link
+    const dataParam = params.get('data');
+    if (dataParam) {
+      setIsViewOnly(true);
+      setSyncStatus('synced');
+      try {
+        const decoded = JSON.parse(LZString.decompressFromEncodedURIComponent(dataParam));
+        if (decoded.positions) setPositions(applySectorMap(decoded.positions));
+        if (decoded.cash != null) setCash(decoded.cash);
+        if (decoded.realized?.length) setRealized(decoded.realized);
+        if (decoded.history?.length) setHistory(decoded.history.map(h => ({ ...h, date: new Date(h.date) })));
+        if (decoded.summary) setAccountSummary(decoded.summary);
+        if (decoded.investNote) setInvestNote(decoded.investNote);
+      } catch(e) { setSyncStatus('error'); }
+      return;
+    }
+
+    // ?gist= GitHub Gist live link
+    const gistParam = params.get('gist');
+    if (gistParam) {
+      setIsViewOnly(true);
+      setSyncStatus('syncing');
+      loadFromGist(gistParam).then(data => {
+        setPositions(applySectorMap(data.positions));
+        if (data.history?.length) setHistory(data.history);
+        setCash(data.cash || DEFAULT_CASH);
+        setRealized(data.realized || []);
+        setAccountSummary(data.summary || null);
+        if (data.investNote) setInvestNote(data.investNote);
+        setSyncStatus('synced');
+      }).catch(e => {
+        console.error('Gist load error:', e);
+        setSyncStatus('error');
+      });
+      return;
+    }
+
+    // Owner's data already loaded via useState initializers from localStorage
+  }, []);
+
+  // Tweaks messaging
+  useEffect(() => {
+    const handler = e => {
+      if (e.data?.type === '__activate_edit_mode') setShowTweaks(true);
+      if (e.data?.type === '__deactivate_edit_mode') setShowTweaks(false);
+    };
+    window.addEventListener('message', handler);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // IBKR auto-refresh every 30s
+  const fetchIBKRData = useCallback(async (base, accountId) => {
+    try {
+      setIbkrError('');
+      const [rawPositions, summary] = await Promise.all([
+        ibkrGetPositions(base, accountId),
+        ibkrGetSummary(base, accountId).catch(() => null),
+      ]);
+      // Keep session alive
+      ibkrTickle(base);
+      const mapped = ibkrPositionsToApp(rawPositions);
+      if (mapped.length) setPositions(mapped);
+      if (summary) {
+        const cashVal = summary.totalcashvalue?.amount ?? summary.totalcashvalue?.USD ?? null;
+        if (cashVal != null) setCash(cashVal);
+        const dayPnl = summary.dailypnl?.amount ?? summary.dailypnl?.USD ?? null;
+        setIbkrDayPnL(dayPnl);
+      }
+      setLastUpdated(new Date());
+    } catch(e) {
+      setIbkrError('Refresh failed: ' + (e.message || 'unknown error'));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ibkrLive || !ibkrBase || !ibkrAccount) return;
+    fetchIBKRData(ibkrBase, ibkrAccount);
+    refreshTimer.current = setInterval(() => fetchIBKRData(ibkrBase, ibkrAccount), 30000);
+    return () => clearInterval(refreshTimer.current);
+  }, [ibkrLive, ibkrBase, ibkrAccount, fetchIBKRData]);
+
+  const handleIBKRConnect = (base, accountId, accounts) => {
+    setIbkrBase(base);
+    setIbkrAccount(accountId);
+    setIbkrAccounts(accounts);
+    setIbkrLive(true);
+    setShowIBKR(false);
+  };
+
+  const disconnectIBKR = () => {
+    setIbkrLive(false);
+    setIbkrAccount('');
+    setIbkrBase('');
+    setIbkrDayPnL(null);
+    setLastUpdated(null);
+    clearInterval(refreshTimer.current);
+  };
+
+  const updateTweak = (key, val) => {
+    const next = { ...tweaks, [key]: val };
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: next }, '*');
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setUploadStatus('loading');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const { positions: parsed, history: h, cash: parsedCash, realized: parsedRealized, summary: parsedSummary } = parseFlexXML(ev.target.result);
+        if (parsed?.length) {
+          const newCash = parsedCash ?? cash;
+          const newHistory = h?.length ? h : [];
+          const newRealized = parsedRealized || [];
+          const newSummary = parsedSummary || null;
+          setPositions(parsed);
+          if (h?.length) setHistory(h);
+          if (parsedCash != null) setCash(parsedCash);
+          setRealized(newRealized);
+          setAccountSummary(newSummary);
+          setUploadStatus('success');
+          saveLocal({ positions: parsed, history: newHistory, cash: newCash, realized: newRealized, summary: newSummary, investNote });
+
+          // ── AI 自动补全行业 ──────────────────────────────────────────────
+          const needsEnrichment = parsed.some(p => p.assetType !== 'OPT' && p.sector === 'Stock');
+          if (needsEnrichment) {
+            setSectorStatus('enriching');
+            enrichSectorsWithAI(parsed).then(enriched => {
+              setPositions(enriched);
+              saveLocal({ positions: enriched, history: newHistory, cash: newCash, realized: newRealized, summary: newSummary, investNote });
+              setSectorStatus('done');
+              setTimeout(() => setSectorStatus(''), 4000);
+            }).catch(() => setSectorStatus(''));
+          }
+          // ────────────────────────────────────────────────────────────────
+
+          // Sync to GitHub Gist if token configured
+          if (getGhToken()) {
+            setSyncStatus('syncing');
+            saveToGist({ positions: parsed, history: newHistory, cash: newCash, realized: newRealized, summary: newSummary, investNote })
+              .then(() => setSyncStatus('saved'))
+              .catch(e => { console.error('Gist sync failed:', e); setSyncStatus('saved'); });
+          } else {
+            setSyncStatus('saved');
+          }
+        } else { setUploadStatus('empty'); }
+      } catch { setUploadStatus('error'); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // 只保留总览，无 Tab 切换
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', '--gain': tweaks.gainColor, '--loss': tweaks.lossColor, '--accent': tweaks.accentColor, '--accent-light': tweaks.accentColor + '18' }}>
+      {showShare && <ShareModal onClose={() => setShowShare(false)} positions={positions} cash={cash} realized={realized} history={hist} investNote={investNote} />}
+      {showIBKR && <IBKRLiveModal onConnect={handleIBKRConnect} onClose={() => setShowIBKR(false)} />}
+
+      <header style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '0 28px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 10, boxShadow: 'var(--shadow-sm)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <div>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, letterSpacing: '-0.01em' }}>Portfolio</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontStyle: 'italic', fontSize: 18, color: tweaks.accentColor, marginLeft: 4 }}>Tracker</span>
+          </div>
+          {isViewOnly && <span style={{ fontSize: 11, background: '#FFF7ED', color: '#92400E', border: '1px solid #FDE68A', padding: '3px 8px', borderRadius: 4, fontWeight: 600 }}>View Only</span>}
+          {ibkrLive && (
+            <span style={{ fontSize: 11, background: 'var(--gain-bg)', color: 'var(--gain)', border: '1px solid #6EE7B7', padding: '3px 8px', borderRadius: 4, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span className="live-dot" /> IBKR Live · {ibkrAccount}
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lastUpdated && <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>↻ {lastUpdated.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>}
+          {ibkrError && <span style={{ fontSize: 11, color: 'var(--loss)', background: 'var(--loss-bg)', padding: '3px 8px', borderRadius: 4 }} title={ibkrError}>⚠ 实时错误</span>}
+          {sectorStatus === 'enriching' && <span style={{ fontSize: 11, color: '#7C3AED', background: '#F5F3FF', padding: '3px 8px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>🤖 AI 识别行业中…</span>}
+          {sectorStatus === 'done'      && <span style={{ fontSize: 11, color: 'var(--gain)', background: 'var(--gain-bg)', padding: '3px 8px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>✓ 行业已识别</span>}
+          {syncStatus === 'syncing' && <span style={{ fontSize: 11, color: '#6B6860', fontFamily: 'var(--font-mono)' }}>↑ 同步中...</span>}
+          {(syncStatus === 'saved' || syncStatus === 'synced') && <span style={{ fontSize: 11, color: 'var(--gain)', background: 'var(--gain-bg)', padding: '3px 8px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>✓ 已同步</span>}
+          {syncStatus === 'error' && <span style={{ fontSize: 11, color: 'var(--loss)', background: 'var(--loss-bg)', padding: '3px 8px', borderRadius: 4 }}>加载失败</span>}
+          {uploadStatus === 'success' && <span style={{ fontSize: 11, color: 'var(--gain)', background: 'var(--gain-bg)', padding: '3px 8px', borderRadius: 4, fontFamily: 'var(--font-mono)' }}>✓ XML 已导入</span>}
+          {uploadStatus === 'empty' && <span style={{ fontSize: 11, color: '#D97706', background: '#FFF7ED', padding: '3px 8px', borderRadius: 4 }}>未找到持仓数据</span>}
+          {uploadStatus === 'error' && <span style={{ fontSize: 11, color: 'var(--loss)', background: 'var(--loss-bg)', padding: '3px 8px', borderRadius: 4 }}>解析失败</span>}
+
+          {!isViewOnly && <>
+            {ibkrLive ? (
+              <button onClick={disconnectIBKR} style={{ padding: '7px 14px', background: 'transparent', color: 'var(--loss)', border: '1px solid var(--loss)', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-body)' }}>
+                断开实时
+              </button>
+            ) : (
+              <button onClick={() => setShowIBKR(true)} style={{ padding: '7px 14px', background: '#EBF8F2', color: 'var(--gain)', border: '1px solid #6EE7B7', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-body)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg>
+                实时连接
+              </button>
+            )}
+            {(
+              <button onClick={() => setShowShare(true)} style={{ padding: '7px 14px', background: 'transparent', color: tweaks.accentColor, border: `1px solid ${tweaks.accentColor}`, borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-body)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="12" cy="3" r="1.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="4" cy="8" r="1.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="12" cy="13" r="1.5" stroke="currentColor" strokeWidth="1.5"/><path d="M5.5 7l5-3M5.5 9l5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                分享
+              </button>
+            )}
+            <input ref={fileRef} type="file" accept=".xml" style={{ display: 'none' }} onChange={handleFile} />
+            <button onClick={() => fileRef.current.click()} style={{ padding: '7px 14px', background: tweaks.accentColor, color: 'white', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-body)' }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M4 6l4-5 4 5M2 12v1a2 2 0 002 2h8a2 2 0 002-2v-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              导入 XML
+            </button>
+          </>}
+        </div>
+      </header>
+
+      <main style={{ padding: 28 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+            {/* Metric Cards — Top Row */}
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              <MetricCard
+                label="投资组合总值"
+                value={fmt(metrics.totalVal)}
+                sub={tweaks.showCash ? `含 ${fmt(cash)} 现金` : `仅股票`}
+              />
+              <MetricCard
+                label="未实现盈亏"
+                value={fmtDelta(metrics.unrealizedPnL)}
+                sub={fmtPct(metrics.unrealizedPct) + ' vs cost basis'}
+                accent={metrics.unrealizedPnL >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                subColor={metrics.unrealizedPnL >= 0 ? tweaks.gainColor : tweaks.lossColor}
+              />
+              {(() => {
+                const realizedTotal = realized.reduce((s, r) => s + (r.realizedPnl || 0), 0);
+                if (realized.length === 0) return null;
+                return (
+                  <MetricCard
+                    label="已实现盈亏(今年)"
+                    value={fmtDelta(realizedTotal)}
+                    sub={`${realized.length} 个已平仓`}
+                    accent={realizedTotal >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                    subColor={realizedTotal >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                  />
+                );
+              })()}
+              {accountSummary && accountSummary.deposits > 0 && (() => {
+                const netDep = accountSummary.deposits - Math.abs(accountSummary.withdrawals);
+                const totalReturn = metrics.totalVal - netDep;
+                const totalReturnPct = netDep > 0 ? (totalReturn / netDep) * 100 : 0;
+                return (
+                  <MetricCard
+                    label="总回报"
+                    value={fmtDelta(totalReturn)}
+                    sub={`${fmtPct(totalReturnPct)}，存入 ${fmt(netDep)}`}
+                    accent={totalReturn >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                    subColor={totalReturn >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                  />
+                );
+              })()}
+              {ibkrDayPnL !== null && (
+                <MetricCard
+                  label="当日盈亏(实时)"
+                  value={fmtDelta(ibkrDayPnL)}
+                  sub="来自 IBKR Gateway"
+                  accent={ibkrDayPnL >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                  subColor={ibkrDayPnL >= 0 ? tweaks.gainColor : tweaks.lossColor}
+                />
+              )}
+              {tweaks.showCash && (
+                <MetricCard
+                  label="现金余额"
+                  value={fmt(cash)}
+                  sub={`占投资组合 ${((cash / metrics.totalVal) * 100).toFixed(1)}%`}
+                />
+              )}
+            </div>
+
+            {/* Account Summary Strip */}
+            {accountSummary && (
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '16px 20px', boxShadow: 'var(--shadow-sm)', display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>存入资金</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{fmt(accountSummary.deposits)}</div>
+                </div>
+                {Math.abs(accountSummary.withdrawals) > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>提取资金</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{fmt(Math.abs(accountSummary.withdrawals))}</div>
+                  </div>
+                )}
+                <div>
+                  <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>股息</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--gain)' }}>{fmt(accountSummary.dividends)}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>手续费</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--loss)' }}>{fmt(Math.abs(accountSummary.commissions))}</div>
+                </div>
+                {Math.abs(accountSummary.withholdingTax) > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>预扣税</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--font-mono)', color: 'var(--loss)' }}>{fmt(Math.abs(accountSummary.withholdingTax))}</div>
+                  </div>
+                )}
+                {accountSummary.fromDate && accountSummary.toDate && (
+                  <div style={{ marginLeft: 'auto', alignSelf: 'center' }}>
+                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600 }}>统计期间</div>
+                    <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{accountSummary.fromDate} → {accountSummary.toDate}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Chart */}
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '20px 20px 14px', boxShadow: 'var(--shadow-sm)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)', fontWeight: 600, marginBottom: 4 }}>90天表现</div>
+                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 24 }}>{fmt(hist[hist.length - 1].value)}</div>
+                </div>
+                <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', fontWeight: 600, color: hist[hist.length-1].value >= hist[0].value ? 'var(--gain)' : 'var(--loss)', background: hist[hist.length-1].value >= hist[0].value ? 'var(--gain-bg)' : 'var(--loss-bg)', padding: '3px 8px', borderRadius: 4, marginTop: 4 }}>
+                  {fmtPct((hist[hist.length-1].value - hist[0].value) / hist[0].value * 100)}
+                </span>
+              </div>
+              <LineChart data={hist} />
+            </div>
+
+            {/* Positions row */}
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>当前持仓 <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', fontWeight: 400, marginLeft: 6 }}>{positions.length} 只</span></div>
+              </div>
+              <PositionsTable positions={positions} compact={tweaks.compactTable} />
+            </div>
+
+            {/* Invest Note */}
+            <InvestNotePanel
+              note={investNote}
+              isViewOnly={isViewOnly}
+              onSave={note => {
+                setInvestNote(note);
+                saveLocal({ investNote: note });
+                if (getGhToken()) saveToGist({ positions, history, cash, realized, summary: accountSummary, investNote: note }).catch(() => {});
+              }}
+            />
+
+            {/* Sector Allocation */}
+            <SectorPieChart positions={positions} />
+
+            {React.createElement(NewsTab, { symbols: positions.map(p => p.symbol) })}
+        </div>
+
+      </main>
+
+      {!isViewOnly && (
+        <div style={{ padding: '0 28px 28px' }}>
+          <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 'var(--radius)', padding: '14px 18px', fontSize: 12, color: '#92400E', lineHeight: 1.7 }}>
+            <strong>IBKR Flex XML 导出：</strong> Performance &amp; Reports → Flex Queries → 创建查询 → 选择 <em>Open Positions</em> + <em>Net Asset Value (NAV) in Base</em> → 格式：XML → 运行 → 下载 → 在上方导入。
+            {' '}<strong>实时数据：</strong>使用实时连接（需要本地运行 IBKR Client Portal Gateway）。
+          </div>
+        </div>
+      )}
+
+      <ChatAssistant positions={positions} cash={cash} realized={realized} metrics={metrics} />
+
+      {showTweaks && (
+        <div style={{ position: 'fixed', bottom: 24, right: 24, background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: 20, boxShadow: '0 8px 32px rgba(0,0,0,0.12)', zIndex: 100, width: 260 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 16 }}>Tweaks</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {['accentColor','gainColor','lossColor'].map(k => (
+              <label key={k} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500 }}>{k === 'accentColor' ? 'Accent' : k === 'gainColor' ? 'Gain Color' : 'Loss Color'}</span>
+                <input type="color" value={tweaks[k]} onChange={e => updateTweak(k, e.target.value)} style={{ width: '100%', height: 32, border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer' }} />
+              </label>
+            ))}
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500 }}>Show Cash</span>
+              <input type="checkbox" checked={tweaks.showCash} onChange={e => updateTweak('showCash', e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500 }}>Compact Table</span>
+              <input type="checkbox" checked={tweaks.compactTable} onChange={e => updateTweak('compactTable', e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
